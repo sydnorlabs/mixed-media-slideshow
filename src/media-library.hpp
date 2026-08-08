@@ -43,7 +43,8 @@ struct Item {
 std::string normalized_key(const std::filesystem::path &path);
 bool classify(const std::filesystem::path &path, MediaKind &kind);
 std::vector<Item> scan_folder(const std::filesystem::path &folder);
-void order_items(std::vector<Item> &items, SortMode mode, std::mt19937 &rng);
+void order_items(std::vector<Item> &items, SortMode mode, std::mt19937 &rng,
+                 bool previous_was_video = false);
 std::size_t preserved_index(const std::vector<Item> &items,
                             const std::filesystem::path &current);
 FrameSize stable_frame_size(uint32_t base_width, uint32_t base_height);

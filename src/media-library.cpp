@@ -51,9 +51,48 @@ std::vector<Item> scan_folder(const std::filesystem::path &folder) {
   return result;
 }
 
-void order_items(std::vector<Item> &items, SortMode mode, std::mt19937 &rng) {
+void order_items(std::vector<Item> &items, SortMode mode, std::mt19937 &rng,
+                 bool previous_was_video) {
   if (mode == SortMode::shuffle) {
-    std::shuffle(items.begin(), items.end(), rng);
+    std::vector<Item> images;
+    std::vector<Item> videos;
+    for (auto &item : items)
+      (item.kind == MediaKind::video ? videos : images).push_back(std::move(item));
+    std::shuffle(images.begin(), images.end(), rng);
+    std::shuffle(videos.begin(), videos.end(), rng);
+
+    // Images create N+1 gaps in which a single video has no video neighbor.
+    // When the preceding cycle ended on video, the first gap is not free.  Fill
+    // every zero-cost gap first, then distribute any excess videos.  Each excess
+    // video necessarily adds exactly one adjacent-video pair, so this achieves
+    // the mathematical minimum when videos outnumber the available separators.
+    std::vector<std::vector<Item>> gaps(images.size() + 1);
+    std::vector<std::size_t> free_gaps;
+    for (std::size_t i = previous_was_video ? 1 : 0; i < gaps.size(); ++i)
+      free_gaps.push_back(i);
+    std::shuffle(free_gaps.begin(), free_gaps.end(), rng);
+
+    std::size_t video_index = 0;
+    for (const auto gap : free_gaps) {
+      if (video_index == videos.size()) break;
+      gaps[gap].push_back(std::move(videos[video_index++]));
+    }
+
+    std::vector<std::size_t> excess_gaps(gaps.size());
+    for (std::size_t i = 0; i < excess_gaps.size(); ++i) excess_gaps[i] = i;
+    std::shuffle(excess_gaps.begin(), excess_gaps.end(), rng);
+    std::size_t excess_index = 0;
+    while (video_index < videos.size()) {
+      const auto gap = excess_gaps[excess_index++ % excess_gaps.size()];
+      gaps[gap].push_back(std::move(videos[video_index++]));
+    }
+
+    items.clear();
+    items.reserve(images.size() + videos.size());
+    for (std::size_t i = 0; i < gaps.size(); ++i) {
+      for (auto &video : gaps[i]) items.push_back(std::move(video));
+      if (i < images.size()) items.push_back(std::move(images[i]));
+    }
     return;
   }
   std::stable_sort(items.begin(), items.end(), [mode](const Item &a, const Item &b) {

@@ -8,6 +8,8 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 OBS_DECLARE_MODULE()
@@ -24,6 +26,7 @@ struct Slideshow {
   obs_source_t *transition{};
   obs_source_t *media{};
   obs_scene_t *frame_scene{};
+  obs_sceneitem_t *frame_background{};
   obs_sceneitem_t *frame_item{};
   std::vector<mms::Item> items;
   std::vector<mms::Item> raw_items;
@@ -70,12 +73,20 @@ static mms::FrameSize current_frame_size() {
 }
 
 static void configure_frame(Slideshow *s) {
-  if (!s->frame_item) return;
+  if (!s->frame_item || s->items.empty() || s->index >= s->items.size()) return;
   struct vec2 bounds {static_cast<float>(s->frame_width),
                       static_cast<float>(s->frame_height)};
-  obs_sceneitem_set_bounds_type(s->frame_item, OBS_BOUNDS_SCALE_OUTER);
+  if (s->frame_background) {
+    obs_sceneitem_set_bounds_type(s->frame_background, OBS_BOUNDS_STRETCH);
+    obs_sceneitem_set_bounds_alignment(s->frame_background, OBS_ALIGN_CENTER);
+    obs_sceneitem_set_bounds_crop(s->frame_background, false);
+    obs_sceneitem_set_bounds(s->frame_background, &bounds);
+  }
+  const bool video = s->items[s->index].kind == mms::MediaKind::video;
+  obs_sceneitem_set_bounds_type(
+      s->frame_item, video ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_SCALE_OUTER);
   obs_sceneitem_set_bounds_alignment(s->frame_item, OBS_ALIGN_CENTER);
-  obs_sceneitem_set_bounds_crop(s->frame_item, true);
+  obs_sceneitem_set_bounds_crop(s->frame_item, !video);
   obs_sceneitem_set_bounds(s->frame_item, &bounds);
 }
 
@@ -216,11 +227,23 @@ static obs_source_t *make_media(const mms::Item &item) {
   return child;
 }
 
+static obs_source_t *make_black_background(uint32_t width, uint32_t height) {
+  obs_data_t *settings = obs_data_create();
+  obs_data_set_int(settings, "width", width);
+  obs_data_set_int(settings, "height", height);
+  obs_data_set_int(settings, "color", 0xFF000000);
+  obs_source_t *background = obs_source_create_private(
+      "color_source", "Mixed Media Slideshow video background", settings);
+  obs_data_release(settings);
+  return background;
+}
+
 static void detach_media(Slideshow *s) {
   if (s->media)
     obs_source_remove_audio_capture_callback(s->media, audio_capture, s);
   if (s->frame_scene) obs_scene_release(s->frame_scene);
   s->frame_scene = nullptr;
+  s->frame_background = nullptr;
   s->frame_item = nullptr;
   if (s->media) obs_source_release(s->media);
   s->media = nullptr;
@@ -233,20 +256,33 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
     s->stopped = true;
     return false;
   }
-  std::size_t candidate = wanted % s->items.size();
-  for (std::size_t attempts = 0; attempts < s->items.size(); ++attempts) {
+  if (wanted >= s->items.size()) return false;
+  std::size_t candidate = wanted;
+  for (std::size_t attempts = 0;
+       attempts < s->items.size() && candidate < s->items.size(); ++attempts) {
     obs_source_t *next = make_media(s->items[candidate]);
     obs_scene_t *next_frame = next ? obs_scene_create_private(
-        "Mixed Media Slideshow cover frame") : nullptr;
+        "Mixed Media Slideshow media frame") : nullptr;
+    obs_source_t *background = nullptr;
+    obs_sceneitem_t *background_item = nullptr;
+    if (next_frame && s->items[candidate].kind == mms::MediaKind::video) {
+      background = make_black_background(s->frame_width, s->frame_height);
+      if (background) background_item = obs_scene_add(next_frame, background);
+    }
     obs_sceneitem_t *next_item = next_frame ? obs_scene_add(next_frame, next) : nullptr;
-    if (next && next_frame && next_item) {
+    const bool background_ready = s->items[candidate].kind != mms::MediaKind::video ||
+                                  background_item != nullptr;
+    if (background) obs_source_release(background);
+    if (next && next_frame && next_item && background_ready) {
       obs_source_add_audio_capture_callback(next, audio_capture, s);
 
       obs_source_t *old_media = s->media;
       obs_scene_t *old_frame = s->frame_scene;
       s->media = next;
       s->frame_scene = next_frame;
+      s->frame_background = background_item;
       s->frame_item = next_item;
+      s->index = candidate;
       configure_frame(s);
 
       obs_source_t *framed = obs_scene_get_source(next_frame);
@@ -263,7 +299,6 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
       if (old_frame) obs_scene_release(old_frame);
       if (old_media) obs_source_release(old_media);
 
-      s->index = candidate;
       s->item_elapsed = 0.0;
       s->stopped = false;
       s->paused = false;
@@ -277,25 +312,45 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
     if (next) obs_source_release(next);
     blog(LOG_WARNING, "[Mixed Media Slideshow] Could not create source for: %s",
          s->items[candidate].path.u8string().c_str());
-    candidate = forward ? (candidate + 1) % s->items.size()
-                        : (candidate + s->items.size() - 1) % s->items.size();
+    if (forward) {
+      ++candidate;
+    } else if (candidate == 0) {
+      candidate = s->items.size();
+    } else {
+      --candidate;
+    }
   }
   s->stopped = true;
   return false;
 }
 
+static bool begin_cycle(Slideshow *s, bool avoid_current_video_boundary) {
+  const bool previous_was_video = avoid_current_video_boundary && s->media &&
+      !s->items.empty() && s->index < s->items.size() &&
+      s->items[s->index].kind == mms::MediaKind::video;
+  auto cycle = s->raw_items;
+  mms::order_items(cycle, s->order, s->rng, previous_was_video);
+  s->items = std::move(cycle);
+  return load_index(s, 0, true);
+}
+
 static void advance(Slideshow *s, bool forward) {
   if (s->items.empty()) return;
-  if (forward && s->index + 1 >= s->items.size() && !s->loop) {
-    s->stopped = true;
-    if (s->media && s->items[s->index].kind == mms::MediaKind::video)
-      obs_source_media_stop(s->media);
+  if (forward && s->index + 1 >= s->items.size()) {
+    if (!s->loop) {
+      s->stopped = true;
+      if (s->media && s->items[s->index].kind == mms::MediaKind::video)
+        obs_source_media_stop(s->media);
+      return;
+    }
+    begin_cycle(s, true);
     return;
   }
   if (!forward && s->index == 0 && !s->loop) return;
-  const auto next = forward ? (s->index + 1) % s->items.size()
+  const auto next = forward ? s->index + 1
                             : (s->index + s->items.size() - 1) % s->items.size();
-  load_index(s, next, forward);
+  if (!load_index(s, next, forward) && forward && s->loop)
+    begin_cycle(s, true);
 }
 
 static void refresh(Slideshow *s, bool force) {
@@ -303,6 +358,70 @@ static void refresh(Slideshow *s, bool force) {
   if (!force && same_raw(raw, s->raw_items)) return;
   const auto current = (!s->items.empty() && s->index < s->items.size())
                            ? s->items[s->index].path : std::filesystem::path{};
+
+  // A real live-folder change must not reshuffle the already-played prefix or
+  // replay it.  Keep that prefix, update its metadata, and make one safe order
+  // from only the unplayed survivors plus newly discovered files.
+  if (!force && s->order == mms::SortMode::shuffle && !current.empty()) {
+    std::unordered_map<std::string, mms::Item> available;
+    for (const auto &entry : raw)
+      available.emplace(mms::normalized_key(entry.path), entry);
+    const auto current_key = mms::normalized_key(current);
+    if (available.count(current_key)) {
+      std::vector<mms::Item> rebuilt;
+      std::unordered_set<std::string> played;
+      std::size_t rebuilt_index = 0;
+      for (std::size_t i = 0; i <= s->index && i < s->items.size(); ++i) {
+        const auto key = mms::normalized_key(s->items[i].path);
+        const auto found = available.find(key);
+        if (found == available.end()) continue;
+        if (key == current_key) rebuilt_index = rebuilt.size();
+        rebuilt.push_back(found->second);
+        played.insert(key);
+      }
+      std::vector<mms::Item> remaining;
+      for (const auto &entry : raw)
+        if (!played.count(mms::normalized_key(entry.path)))
+          remaining.push_back(entry);
+      const bool current_is_video =
+          rebuilt[rebuilt_index].kind == mms::MediaKind::video;
+      mms::order_items(remaining, mms::SortMode::shuffle, s->rng,
+                       current_is_video);
+      rebuilt.insert(rebuilt.end(), remaining.begin(), remaining.end());
+      s->raw_items = std::move(raw);
+      s->items = std::move(rebuilt);
+      s->index = rebuilt_index;
+      return;
+    }
+
+    // If the current file disappeared, finish the old cycle's unplayed
+    // survivors before allowing any surviving prefix item to repeat.
+    std::unordered_set<std::string> played;
+    for (std::size_t i = 0; i <= s->index && i < s->items.size(); ++i)
+      played.insert(mms::normalized_key(s->items[i].path));
+    std::vector<mms::Item> remaining;
+    for (const auto &entry : raw)
+      if (!played.count(mms::normalized_key(entry.path)))
+        remaining.push_back(entry);
+    const bool current_was_video = s->index < s->items.size() &&
+        s->items[s->index].kind == mms::MediaKind::video;
+    s->raw_items = std::move(raw);
+    if (remaining.empty()) {
+      if (s->loop) {
+        begin_cycle(s, true);
+      } else {
+        s->stopped = true;
+        if (s->media && current_was_video) obs_source_media_stop(s->media);
+      }
+    } else {
+      mms::order_items(remaining, mms::SortMode::shuffle, s->rng,
+                       current_was_video);
+      s->items = std::move(remaining);
+      load_index(s, 0, true);
+    }
+    return;
+  }
+
   s->raw_items = raw;
   mms::order_items(raw, s->order, s->rng);
   s->items = std::move(raw);
@@ -314,6 +433,7 @@ static void refresh(Slideshow *s, bool force) {
   const auto preserved = mms::preserved_index(s->items, current);
   if (preserved < s->items.size()) {
     s->index = preserved;
+    configure_frame(s);
   } else {
     load_index(s, std::min(s->index, s->items.size() - 1), true);
   }
@@ -469,7 +589,10 @@ static enum obs_media_state state(void *data) {
 }
 static void activate(void *data) {
   auto *s = static_cast<Slideshow *>(data);
-  if (s->restart_on_activate && s->activated_once) restart(s);
+  // libobs calls source_info::activate on the real inactive-to-active edge.
+  // Initial creation already starts at a cycle head; later activations begin a
+  // deliberate new cycle rather than resuming at a surprising middle item.
+  if (s->restart_on_activate && s->activated_once) begin_cycle(s, true);
   s->activated_once = true;
 }
 

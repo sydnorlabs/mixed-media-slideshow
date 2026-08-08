@@ -28,11 +28,22 @@ by default); videos play to completion and forward their audio to OBS.
 Add **Mixed Media Slideshow** from the Sources `+` menu and select a folder.
 Only files directly in that folder are used; subfolders are not traversed.
 Choose alphabetical, date (oldest first), or shuffle order, loop behavior, and
-a Cut, Fade, directional Swipe/Slide, or Fade to Black transition. Every item
-is center-cropped without distortion to fill a source frame fixed to OBS's
-current base canvas size. The source checks the folder once per second. A
-refresh retains the current path when that file still exists. Unsupported, missing, corrupt,
-or decoder-rejected items are skipped without blocking later items.
+a Cut, Fade, directional Swipe/Slide, or Fade to Black transition. Photos use
+proportional Cover + Center sizing: they fill the source frame fixed to OBS's
+current base canvas size and only their outside edges are cropped. Videos use
+proportional Contain + Center sizing instead, so the complete picture remains
+visible without stretching or cropping; opaque black letterbox/pillarbox bars
+fill any unused part of that same fixed frame.
+
+Each shuffle cycle contains every supported item exactly once. Videos are kept
+apart within and between cycles whenever images are available as separators.
+If there are more videos than the image gaps can separate, the scheduler uses
+the mathematically fewest unavoidable adjacent-video pairs. Loop starts a new
+full cycle; Shuffle creates a new safe permutation for that cycle. The source
+checks the folder once per second. An unchanged scan does not reshuffle or
+replay anything. A changed folder retains the current path when possible and,
+in Shuffle, rebuilds only the unplayed remainder. Unsupported, missing,
+corrupt, or decoder-rejected items are skipped without blocking later items.
 
 Use the standard OBS media toolbar for previous, next, restart, play/pause, and
 stop. The same controls are buttons in Source Properties. Still-image timing
@@ -42,8 +53,11 @@ video-only internal
 transition is not exposed as a second scene audio route. Private media sources
 leave hardware decoding disabled, matching OBS 32.2.1's compatible software
 decode default rather than forcing a CUDA probe.
-“Restart on activation” restarts the current item whenever its scene becomes
-active after the first activation.
+“Restart on activation” intentionally begins a new full cycle whenever its
+scene becomes active after the first activation (the first alphabetical/date
+item, or a newly generated safe Shuffle cycle). When disabled, activation does
+not change the retained playback state. The explicit Restart media control
+continues to restart only the current item.
 
 ## Build and test
 

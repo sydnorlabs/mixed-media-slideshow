@@ -30,3 +30,12 @@ require_literal("\"transition_video_stop\", transition_video_stopped" "transitio
 require_literal("obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B)" "completed destination lookup")
 require_literal("obs_transition_set(transition, destination)" "transition input collapse")
 require_literal("obs_source_t *transition = get_transition_ref(s)" "graphics callback ownership")
+
+# Photos cover while videos contain over an opaque private black frame.
+require_literal("video ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_SCALE_OUTER" "per-media frame sizing")
+require_literal("obs_sceneitem_set_bounds_crop(s->frame_item, !video)" "video contain without crop")
+require_literal([["color_source", "Mixed Media Slideshow video background"]] "private video black background")
+require_literal([[obs_data_set_int(settings, "color", 0xFF000000)]] "opaque black video background")
+
+# Activation policy must use libobs's source activation callback.
+require_literal("info.activate = activate" "libobs activation callback registration")
