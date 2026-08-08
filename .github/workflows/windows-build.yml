@@ -1,0 +1,78 @@
+name: Windows x64 build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure OBS 32.2.1 plugin
+        run: cmake --preset windows-ci-x64
+
+      - name: Build real x64 DLL
+        run: cmake --build --preset windows-x64 --config Release --parallel
+
+      - name: Run non-OBS logic tests
+        run: ctest --preset windows-x64
+
+      - name: Install portable tree
+        shell: pwsh
+        run: cmake --install build_x64 --config Release --prefix release
+
+      - name: Verify x64 DLL and create exact portable ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'release/mixed-media-slideshow'
+          $dll = Join-Path $root 'bin/64bit/mixed-media-slideshow.dll'
+          $locale = Join-Path $root 'data/locale/en-US.ini'
+          if (!(Test-Path $dll -PathType Leaf)) { throw "Missing built DLL: $dll" }
+          if (!(Test-Path $locale -PathType Leaf)) { throw "Missing locale: $locale" }
+
+          $unexpected = Get-ChildItem $root -Recurse -File | Where-Object {
+            $_.FullName -ne (Resolve-Path $dll).Path -and
+            $_.FullName -ne (Resolve-Path $locale).Path
+          }
+          if ($unexpected) { throw "Unexpected packaged files: $($unexpected.FullName -join ', ')" }
+
+          $headers = & dumpbin.exe /headers $dll | Out-String
+          if ($LASTEXITCODE -ne 0 -or $headers -notmatch '8664 machine \(x64\)') {
+            throw 'DLL is not a verified Windows x64 PE image'
+          }
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $zip = Join-Path $PWD 'dist/mixed-media-slideshow-windows-x64.zip'
+          Compress-Archive -Path $root -DestinationPath $zip -CompressionLevel Optimal
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $actual = @($archive.Entries | Where-Object { $_.Name } |
+              ForEach-Object { $_.FullName.Replace('\', '/') } | Sort-Object)
+            $expected = @(
+              'mixed-media-slideshow/bin/64bit/mixed-media-slideshow.dll',
+              'mixed-media-slideshow/data/locale/en-US.ini'
+            ) | Sort-Object
+            if (($actual -join "`n") -ne ($expected -join "`n")) {
+              throw "Unexpected ZIP layout:`n$($actual -join "`n")"
+            }
+            $roots = @($actual | ForEach-Object { ($_ -split '/')[0] } | Select-Object -Unique)
+            if ($roots.Count -ne 1 -or $roots[0] -ne 'mixed-media-slideshow') {
+              throw 'ZIP must contain exactly one mixed-media-slideshow root folder'
+            }
+          } finally { $archive.Dispose() }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixed-media-slideshow-windows-x64
+          path: dist/mixed-media-slideshow-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

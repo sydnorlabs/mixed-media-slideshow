@@ -1,0 +1,39 @@
+{
+  "dependencies": {
+    "obs-studio": {
+      "version": "32.2.1",
+      "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
+      "label": "OBS Studio 32.2.1 sources",
+      "hashes": {
+        "windows-x64": "0cc1bd46a3d60c8f4317b38c27414fc0472e04609f4e67ad2142ed1598ef5462"
+      }
+    },
+    "prebuilt": {
+      "version": "2025-07-11",
+      "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
+      "label": "OBS prebuilt dependencies",
+      "hashes": {
+        "windows-x64": "c8c642c1070dc31ce9a0f1e4cef5bb992f4bff4882255788b5da12129e85caa7"
+      }
+    },
+    "qt6": {
+      "version": "2025-07-11",
+      "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
+      "label": "Qt (unused by this plugin)",
+      "hashes": {
+        "windows-x64": "0e76bf0555dd5382838850b748d3dcfab44a1e1058441309ab54e1a65b156d0a"
+      }
+    }
+  },
+  "name": "mixed-media-slideshow",
+  "displayName": "Mixed Media Slideshow",
+  "version": "1.0.0",
+  "author": "Mixed Media Slideshow contributors",
+  "website": "https://github.com/",
+  "email": "",
+  "platformConfig": {
+    "macos": {
+      "bundleId": "com.example.mixed-media-slideshow"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+/.deps/
+/build*/
+/release/
+/dist/
+*.zip
+*.dll
+*.pdb
