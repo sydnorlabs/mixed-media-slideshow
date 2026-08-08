@@ -37,6 +37,11 @@ or decoder-rejected items are skipped without blocking later items.
 Use the standard OBS media toolbar for previous, next, restart, play/pause, and
 stop. The same controls are buttons in Source Properties. Still-image timing
 pauses with playback; videos use OBS's FFmpeg media source and retain audio.
+Private video audio is forwarded only through the parent slideshow source; its
+video-only internal
+transition is not exposed as a second scene audio route. Private media sources
+leave hardware decoding disabled, matching OBS 32.2.1's compatible software
+decode default rather than forcing a CUDA probe.
 “Restart on activation” restarts the current item whenever its scene becomes
 active after the first activation.
 

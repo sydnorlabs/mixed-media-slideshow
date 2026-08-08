@@ -45,6 +45,7 @@ struct Slideshow {
   bool stopped{};
   bool activated_once{};
   std::mutex audio_mutex;
+  std::mutex transition_mutex;
 };
 
 static bool same_raw(const std::vector<mms::Item> &a,
@@ -78,7 +79,37 @@ static void configure_frame(Slideshow *s) {
   obs_sceneitem_set_bounds(s->frame_item, &bounds);
 }
 
-static obs_source_t *create_transition(mms::TransitionKind requested,
+static obs_source_t *get_transition_ref(Slideshow *s) {
+  std::lock_guard<std::mutex> lock(s->transition_mutex);
+  return obs_source_get_ref(s->transition);
+}
+
+// This source forwards private media audio itself, so the transition is video
+// only from the parent source's perspective.  Complete it when its video has
+// finished; otherwise libobs waits for an audio-tree render that deliberately
+// never occurs and retains both transition inputs.
+static void transition_video_stopped(void *param, calldata_t *calldata) {
+  auto *s = static_cast<Slideshow *>(param);
+  auto *signalled = static_cast<obs_source_t *>(calldata_ptr(calldata, "source"));
+  obs_source_t *transition = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(s->transition_mutex);
+    if (s->transition == signalled)
+      transition = obs_source_get_ref(signalled);
+  }
+  if (!transition) return;
+
+  obs_source_t *destination =
+      obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B);
+  if (destination) {
+    obs_transition_set(transition, destination);
+    obs_source_release(destination);
+  }
+  obs_source_release(transition);
+}
+
+static obs_source_t *create_transition(Slideshow *s,
+                                       mms::TransitionKind requested,
                                        mms::TransitionKind &active) {
   auto make = [](mms::TransitionKind kind) {
     const auto spec = mms::transition_spec(kind);
@@ -106,14 +137,21 @@ static obs_source_t *create_transition(mms::TransitionKind requested,
     result = make(mms::TransitionKind::fade);
     active = mms::TransitionKind::fade;
   }
+  if (result) {
+    signal_handler_connect(obs_source_get_signal_handler(result),
+                           "transition_video_stop", transition_video_stopped, s);
+  }
   return result;
 }
 
 static bool replace_transition(Slideshow *s) {
-  if (s->transition && s->active_transition == s->requested_transition)
-    return true;
+  {
+    std::lock_guard<std::mutex> lock(s->transition_mutex);
+    if (s->transition && s->active_transition == s->requested_transition)
+      return true;
+  }
   mms::TransitionKind active;
-  obs_source_t *replacement = create_transition(s->requested_transition, active);
+  obs_source_t *replacement = create_transition(s, s->requested_transition, active);
   if (!replacement) {
     blog(LOG_ERROR, "[Mixed Media Slideshow] OBS fade transition is unavailable");
     return false;
@@ -122,10 +160,18 @@ static bool replace_transition(Slideshow *s) {
   obs_transition_set_scale_type(replacement, OBS_TRANSITION_SCALE_STRETCH);
   if (s->frame_scene)
     obs_transition_set(replacement, obs_scene_get_source(s->frame_scene));
-  obs_source_t *old = s->transition;
-  s->transition = replacement;
-  s->active_transition = active;
-  if (old) obs_source_release(old);
+  obs_source_t *old;
+  {
+    std::lock_guard<std::mutex> lock(s->transition_mutex);
+    old = s->transition;
+    s->transition = replacement;
+    s->active_transition = active;
+  }
+  if (old) {
+    signal_handler_disconnect(obs_source_get_signal_handler(old),
+                              "transition_video_stop", transition_video_stopped, s);
+    obs_source_release(old);
+  }
   return true;
 }
 
@@ -161,7 +207,9 @@ static obs_source_t *make_media(const mms::Item &item) {
     obs_data_set_bool(settings, "restart_on_activate", false);
     obs_data_set_bool(settings, "close_when_inactive", false);
     obs_data_set_bool(settings, "clear_on_media_end", false);
-    obs_data_set_bool(settings, "hw_decode", true);
+    // OBS 32.2.1's ffmpeg_source defaults to software decoding.  Do not opt
+    // private sources into its CUDA probe on Intel-only systems.
+    obs_data_set_bool(settings, "hw_decode", false);
     child = obs_source_create_private("ffmpeg_source", "Mixed Media Slideshow video", settings);
   }
   obs_data_release(settings);
@@ -317,7 +365,17 @@ static void destroy(void *data) {
     s->source = nullptr;
   }
   detach_media(s);
-  if (s->transition) obs_source_release(s->transition);
+  obs_source_t *transition;
+  {
+    std::lock_guard<std::mutex> lock(s->transition_mutex);
+    transition = s->transition;
+    s->transition = nullptr;
+  }
+  if (transition) {
+    signal_handler_disconnect(obs_source_get_signal_handler(transition),
+                              "transition_video_stop", transition_video_stopped, s);
+    obs_source_release(transition);
+  }
   delete s;
 }
 
@@ -331,11 +389,11 @@ static uint32_t height(void *data) {
 }
 static void render(void *data, gs_effect_t *) {
   auto *s = static_cast<Slideshow *>(data);
-  if (s->transition) obs_source_video_render(s->transition);
-}
-static void enumerate(void *data, obs_source_enum_proc_t cb, void *param) {
-  auto *s = static_cast<Slideshow *>(data);
-  if (s->transition) cb(s->source, s->transition, param);
+  obs_source_t *transition = get_transition_ref(s);
+  if (transition) {
+    obs_source_video_render(transition);
+    obs_source_release(transition);
+  }
 }
 
 static void tick(void *data, float seconds) {
@@ -487,7 +545,6 @@ static obs_source_info make_info() {
   info.activate = activate;
   info.video_tick = tick;
   info.video_render = render;
-  info.enum_active_sources = enumerate;
   info.media_play_pause = play_pause;
   info.media_restart = restart;
   info.media_stop = stop;

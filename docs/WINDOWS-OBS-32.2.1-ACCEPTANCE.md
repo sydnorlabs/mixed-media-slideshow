@@ -4,10 +4,11 @@ Record the OBS log and exact test media used. Do not mark an item passed unless
 it was observed interactively on Windows x64 in OBS Studio 32.2.1.
 
 - [ ] CI job passed, DLL has PE32+ x86-64 headers, and archive layout validation passed.
-- [ ] Clean OBS 32.2.1 x64 starts with no plugin loader error; log shows version `1.0.0 loaded`.
+- [ ] Clean OBS 32.2.1 x64 starts with no plugin loader error; log shows version `1.0.1 loaded`.
 - [ ] **Mixed Media Slideshow** appears in the source picker and can be added.
 - [ ] Default still duration is 30 seconds and two readable images advance accordingly.
 - [ ] MP4, MKV, and WebM test videos play to their natural end; picture is visible and audio reaches the OBS mixer/recording without duplication.
+- [ ] On an Intel-only machine, rapidly alternate Next/Previous among images and audible videos during every transition type for at least five minutes; OBS remains running, audio appears only on the parent source, and the log contains no `nvcuda.dll` load attempts from this plugin's media sources.
 - [ ] A still after a video starts only after that video ends.
 - [ ] Adding, renaming, and removing files is reflected within two seconds; the current item stays selected when it still exists.
 - [ ] Alphabetical and date (oldest first) orders match the files; shuffle contains each file once per cycle.

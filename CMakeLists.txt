@@ -34,4 +34,8 @@ if(BUILD_TESTING)
   target_include_directories(media-library-tests PRIVATE src)
   target_compile_features(media-library-tests PRIVATE cxx_std_17)
   add_test(NAME media-library-tests COMMAND media-library-tests)
+  add_test(NAME source-safety-check
+    COMMAND ${CMAKE_COMMAND}
+      -DSOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/src/plugin-main.cpp
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/source-safety-check.cmake)
 endif()
