@@ -12,10 +12,13 @@ by default); videos play to completion and forward their audio to OBS.
    `mixed-media-slideshow`, with:
    - `bin/64bit/mixed-media-slideshow.dll`
    - `data/locale/en-US.ini`
-4. Extract that top-level folder into
-   `C:\Program Files\obs-studio\obs-plugins\` (administrator permission may
-   be required). The DLL should therefore end up at
-   `C:\Program Files\obs-studio\obs-plugins\mixed-media-slideshow\bin\64bit\mixed-media-slideshow.dll`.
+4. Extract that top-level folder into OBS's official all-users plugin directory,
+   `C:\ProgramData\obs-studio\plugins\`. Keep the existing `bin` and `data`
+   folders together under the plugin root. The DLL should therefore end up at
+   `C:\ProgramData\obs-studio\plugins\mixed-media-slideshow\bin\64bit\mixed-media-slideshow.dll`,
+   and the locale file at
+   `C:\ProgramData\obs-studio\plugins\mixed-media-slideshow\data\locale\en-US.ini`.
+   (`ProgramData` is hidden by default; paste the path into File Explorer.)
 5. Start OBS. If the source is absent, check **Help > Log Files > View Current
    Log** for a loader error. Do not disable OBS security or modify global OBS
    settings.
@@ -25,8 +28,10 @@ by default); videos play to completion and forward their audio to OBS.
 Add **Mixed Media Slideshow** from the Sources `+` menu and select a folder.
 Only files directly in that folder are used; subfolders are not traversed.
 Choose alphabetical, date (oldest first), or shuffle order, loop behavior, and
-cut or fade. The source checks the folder once per second. A refresh retains
-the current path when that file still exists. Unsupported, missing, corrupt,
+a Cut, Fade, directional Swipe/Slide, or Fade to Black transition. Every item
+is center-cropped without distortion to fill a source frame fixed to OBS's
+current base canvas size. The source checks the folder once per second. A
+refresh retains the current path when that file still exists. Unsupported, missing, corrupt,
 or decoder-rejected items are skipped without blocking later items.
 
 Use the standard OBS media toolbar for previous, next, restart, play/pause, and

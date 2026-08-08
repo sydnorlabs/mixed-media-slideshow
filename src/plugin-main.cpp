@@ -1,4 +1,5 @@
 #include <obs-module.h>
+#include <graphics/vec2.h>
 
 #include "media-library.hpp"
 
@@ -22,6 +23,8 @@ struct Slideshow {
   obs_source_t *source{};
   obs_source_t *transition{};
   obs_source_t *media{};
+  obs_scene_t *frame_scene{};
+  obs_sceneitem_t *frame_item{};
   std::vector<mms::Item> items;
   std::vector<mms::Item> raw_items;
   std::filesystem::path folder;
@@ -31,9 +34,12 @@ struct Slideshow {
   double still_seconds{30.0};
   double item_elapsed{};
   double refresh_elapsed{};
-  uint32_t fade_ms{500};
+  uint32_t transition_ms{500};
+  uint32_t frame_width{1920};
+  uint32_t frame_height{1080};
   bool loop{true};
-  bool use_fade{true};
+  mms::TransitionKind requested_transition{mms::TransitionKind::fade};
+  mms::TransitionKind active_transition{mms::TransitionKind::fade};
   bool restart_on_activate{true};
   bool paused{};
   bool stopped{};
@@ -53,6 +59,74 @@ static bool same_raw(const std::vector<mms::Item> &a,
     return out;
   };
   return sorted(a) == sorted(b);
+}
+
+static mms::FrameSize current_frame_size() {
+  struct obs_video_info video {};
+  return obs_get_video_info(&video)
+             ? mms::stable_frame_size(video.base_width, video.base_height)
+             : mms::stable_frame_size(0, 0);
+}
+
+static void configure_frame(Slideshow *s) {
+  if (!s->frame_item) return;
+  struct vec2 bounds {static_cast<float>(s->frame_width),
+                      static_cast<float>(s->frame_height)};
+  obs_sceneitem_set_bounds_type(s->frame_item, OBS_BOUNDS_SCALE_OUTER);
+  obs_sceneitem_set_bounds_alignment(s->frame_item, OBS_ALIGN_CENTER);
+  obs_sceneitem_set_bounds_crop(s->frame_item, true);
+  obs_sceneitem_set_bounds(s->frame_item, &bounds);
+}
+
+static obs_source_t *create_transition(mms::TransitionKind requested,
+                                       mms::TransitionKind &active) {
+  auto make = [](mms::TransitionKind kind) {
+    const auto spec = mms::transition_spec(kind);
+    obs_data_t *settings = obs_data_create();
+    if (spec.direction)
+      obs_data_set_string(settings, "direction", spec.direction);
+    if (kind == mms::TransitionKind::fade_to_black) {
+      obs_data_set_int(settings, "color", 0x000000);
+      obs_data_set_int(settings, "switch_point", 50);
+    }
+    obs_source_t *result = obs_source_create_private(
+        spec.source_id, "Mixed Media Slideshow transition", settings);
+    obs_data_release(settings);
+    return result;
+  };
+
+  obs_source_t *result = make(requested);
+  active = requested;
+  if (!result && requested != mms::TransitionKind::fade) {
+    const auto failed = mms::transition_spec(requested);
+    blog(LOG_WARNING,
+         "[Mixed Media Slideshow] Built-in transition '%s' could not be "
+         "created; falling back to Fade",
+         failed.source_id);
+    result = make(mms::TransitionKind::fade);
+    active = mms::TransitionKind::fade;
+  }
+  return result;
+}
+
+static bool replace_transition(Slideshow *s) {
+  if (s->transition && s->active_transition == s->requested_transition)
+    return true;
+  mms::TransitionKind active;
+  obs_source_t *replacement = create_transition(s->requested_transition, active);
+  if (!replacement) {
+    blog(LOG_ERROR, "[Mixed Media Slideshow] OBS fade transition is unavailable");
+    return false;
+  }
+  obs_transition_set_size(replacement, s->frame_width, s->frame_height);
+  obs_transition_set_scale_type(replacement, OBS_TRANSITION_SCALE_STRETCH);
+  if (s->frame_scene)
+    obs_transition_set(replacement, obs_scene_get_source(s->frame_scene));
+  obs_source_t *old = s->transition;
+  s->transition = replacement;
+  s->active_transition = active;
+  if (old) obs_source_release(old);
+  return true;
 }
 
 static void audio_capture(void *param, obs_source_t *,
@@ -95,9 +169,12 @@ static obs_source_t *make_media(const mms::Item &item) {
 }
 
 static void detach_media(Slideshow *s) {
-  if (!s->media) return;
-  obs_source_remove_audio_capture_callback(s->media, audio_capture, s);
-  obs_source_release(s->media);
+  if (s->media)
+    obs_source_remove_audio_capture_callback(s->media, audio_capture, s);
+  if (s->frame_scene) obs_scene_release(s->frame_scene);
+  s->frame_scene = nullptr;
+  s->frame_item = nullptr;
+  if (s->media) obs_source_release(s->media);
   s->media = nullptr;
 }
 
@@ -111,15 +188,33 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
   std::size_t candidate = wanted % s->items.size();
   for (std::size_t attempts = 0; attempts < s->items.size(); ++attempts) {
     obs_source_t *next = make_media(s->items[candidate]);
-    if (next) {
+    obs_scene_t *next_frame = next ? obs_scene_create_private(
+        "Mixed Media Slideshow cover frame") : nullptr;
+    obs_sceneitem_t *next_item = next_frame ? obs_scene_add(next_frame, next) : nullptr;
+    if (next && next_frame && next_item) {
       obs_source_add_audio_capture_callback(next, audio_capture, s);
-      if (!s->media || !s->use_fade || s->fade_ms == 0)
-        obs_transition_set(s->transition, next);
+
+      obs_source_t *old_media = s->media;
+      obs_scene_t *old_frame = s->frame_scene;
+      s->media = next;
+      s->frame_scene = next_frame;
+      s->frame_item = next_item;
+      configure_frame(s);
+
+      obs_source_t *framed = obs_scene_get_source(next_frame);
+      const bool cut = s->active_transition == mms::TransitionKind::cut ||
+                       s->transition_ms == 0 || !old_media;
+      if (cut)
+        obs_transition_set(s->transition, framed);
       else
         obs_transition_start(s->transition, OBS_TRANSITION_MODE_AUTO,
-                             s->fade_ms, next);
-      detach_media(s);
-      s->media = next;
+                             s->transition_ms, framed);
+
+      if (old_media)
+        obs_source_remove_audio_capture_callback(old_media, audio_capture, s);
+      if (old_frame) obs_scene_release(old_frame);
+      if (old_media) obs_source_release(old_media);
+
       s->index = candidate;
       s->item_elapsed = 0.0;
       s->stopped = false;
@@ -130,6 +225,8 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
            s->items[candidate].path.u8string().c_str());
       return true;
     }
+    if (next_frame) obs_scene_release(next_frame);
+    if (next) obs_source_release(next);
     blog(LOG_WARNING, "[Mixed Media Slideshow] Could not create source for: %s",
          s->items[candidate].path.u8string().c_str());
     candidate = forward ? (candidate + 1) % s->items.size()
@@ -182,9 +279,19 @@ static void update(void *data, obs_data_t *settings) {
   s->still_seconds = std::max(0.1, obs_data_get_double(settings, "still_duration"));
   s->order = static_cast<mms::SortMode>(obs_data_get_int(settings, "order"));
   s->loop = obs_data_get_bool(settings, "loop");
-  s->use_fade = obs_data_get_int(settings, "transition") == 1;
-  s->fade_ms = static_cast<uint32_t>(std::max<int64_t>(0, obs_data_get_int(settings, "fade_ms")));
+  const int64_t transition_value = obs_data_get_int(settings, "transition");
+  s->requested_transition = transition_value >= 0 && transition_value <= 6
+      ? static_cast<mms::TransitionKind>(transition_value)
+      : mms::TransitionKind::fade;
+  s->transition_ms = static_cast<uint32_t>(
+      std::max<int64_t>(0, obs_data_get_int(settings, "fade_ms")));
   s->restart_on_activate = obs_data_get_bool(settings, "restart_on_activate");
+  const auto frame = current_frame_size();
+  s->frame_width = frame.width;
+  s->frame_height = frame.height;
+  if (!replace_transition(s)) return;
+  obs_transition_set_size(s->transition, s->frame_width, s->frame_height);
+  configure_frame(s);
   refresh(s, true);
   if (!s->media && !s->items.empty()) load_index(s, 0, true);
 }
@@ -192,14 +299,14 @@ static void update(void *data, obs_data_t *settings) {
 static void *create(obs_data_t *settings, obs_source_t *source) {
   auto *s = new Slideshow;
   s->source = source;
-  s->transition = obs_source_create_private("fade_transition",
-                                             "Mixed Media Slideshow transition", nullptr);
+  const auto frame = current_frame_size();
+  s->frame_width = frame.width;
+  s->frame_height = frame.height;
+  update(s, settings);
   if (!s->transition) {
-    blog(LOG_ERROR, "[Mixed Media Slideshow] OBS fade transition is unavailable");
     delete s;
     return nullptr;
   }
-  update(s, settings);
   return s;
 }
 
@@ -216,11 +323,11 @@ static void destroy(void *data) {
 
 static uint32_t width(void *data) {
   auto *s = static_cast<Slideshow *>(data);
-  return s->transition ? obs_source_get_width(s->transition) : 0;
+  return s->frame_width;
 }
 static uint32_t height(void *data) {
   auto *s = static_cast<Slideshow *>(data);
-  return s->transition ? obs_source_get_height(s->transition) : 0;
+  return s->frame_height;
 }
 static void render(void *data, gs_effect_t *) {
   auto *s = static_cast<Slideshow *>(data);
@@ -233,6 +340,13 @@ static void enumerate(void *data, obs_source_enum_proc_t cb, void *param) {
 
 static void tick(void *data, float seconds) {
   auto *s = static_cast<Slideshow *>(data);
+  const auto frame = current_frame_size();
+  if (frame.width != s->frame_width || frame.height != s->frame_height) {
+    s->frame_width = frame.width;
+    s->frame_height = frame.height;
+    obs_transition_set_size(s->transition, frame.width, frame.height);
+    configure_frame(s);
+  }
   s->refresh_elapsed += seconds;
   if (s->refresh_elapsed >= 1.0) {
     s->refresh_elapsed = 0.0;
@@ -331,7 +445,13 @@ static obs_properties_t *properties(void *data) {
       OBS_COMBO_FORMAT_INT);
   obs_property_list_add_int(transition, obs_module_text("Cut"), 0);
   obs_property_list_add_int(transition, obs_module_text("Fade"), 1);
-  obs_properties_add_int(p, "fade_ms", obs_module_text("FadeDuration"), 0, 10000, 50);
+  obs_property_list_add_int(transition, obs_module_text("SwipeLeft"), 2);
+  obs_property_list_add_int(transition, obs_module_text("SwipeRight"), 3);
+  obs_property_list_add_int(transition, obs_module_text("SlideLeft"), 4);
+  obs_property_list_add_int(transition, obs_module_text("SlideRight"), 5);
+  obs_property_list_add_int(transition, obs_module_text("FadeToBlack"), 6);
+  obs_properties_add_int(p, "fade_ms", obs_module_text("TransitionDuration"),
+                         0, 10000, 50);
   obs_properties_add_bool(p, "restart_on_activate", obs_module_text("RestartOnActivate"));
   obs_properties_add_button2(p, "previous", obs_module_text("Previous"), button, data);
   obs_properties_add_button2(p, "next", obs_module_text("Next"), button, data);

@@ -70,4 +70,37 @@ std::size_t preserved_index(const std::vector<Item> &items,
     if (normalized_key(items[i].path) == key) return i;
   return items.size();
 }
+
+FrameSize stable_frame_size(uint32_t base_width, uint32_t base_height) {
+  // OBS has no base dimensions before video is initialized. Keep a useful,
+  // deterministic 16:9 source transform box until video info is available.
+  if (base_width == 0 || base_height == 0) return {1920, 1080};
+  return {base_width, base_height};
+}
+
+CoverTransform cover_transform(uint32_t source_width, uint32_t source_height,
+                               uint32_t frame_width, uint32_t frame_height) {
+  if (source_width == 0 || source_height == 0 || frame_width == 0 ||
+      frame_height == 0)
+    return {0.0, 0.0, 0.0};
+  const double scale = std::max(static_cast<double>(frame_width) / source_width,
+                                static_cast<double>(frame_height) / source_height);
+  return {scale,
+          (static_cast<double>(frame_width) - source_width * scale) / 2.0,
+          (static_cast<double>(frame_height) - source_height * scale) / 2.0};
+}
+
+TransitionSpec transition_spec(TransitionKind kind) {
+  switch (kind) {
+  case TransitionKind::cut: return {"cut_transition", nullptr};
+  case TransitionKind::fade: return {"fade_transition", nullptr};
+  case TransitionKind::swipe_left: return {"swipe_transition", "left"};
+  case TransitionKind::swipe_right: return {"swipe_transition", "right"};
+  case TransitionKind::slide_left: return {"slide_transition", "left"};
+  case TransitionKind::slide_right: return {"slide_transition", "right"};
+  case TransitionKind::fade_to_black:
+    return {"fade_to_color_transition", nullptr};
+  }
+  return {"fade_transition", nullptr};
+}
 } // namespace mms
