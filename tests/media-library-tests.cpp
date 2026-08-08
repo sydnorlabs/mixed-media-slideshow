@@ -99,6 +99,26 @@ int main() {
   assert(mms::preserved_index(scanned, scanned[1].path) == 1);
   assert(mms::preserved_index(scanned, root / "gone.jpg") == scanned.size());
 
+  const auto first_status = mms::playlist_status(scanned, 0);
+  assert(first_status.position == 1 && first_status.total == 2);
+  assert(first_status.current_filename == "A.png");
+  assert(first_status.next_filename == "b.mp4");
+  const auto final_status = mms::playlist_status(scanned, 1);
+  assert(final_status.position == 2 && final_status.total == 2);
+  assert(final_status.current_filename == "b.mp4");
+  assert(final_status.next_filename.empty()); // next cycle is not realized yet
+  const auto empty_status = mms::playlist_status({}, 0);
+  assert(empty_status.position == 0 && empty_status.total == 0);
+  assert(empty_status.current_filename.empty() && empty_status.next_filename.empty());
+
+  assert(mms::still_duration_ms(30.0) == 30000);
+  assert(mms::still_time_ms(12.345, 30.0) == 12345);
+  assert(mms::still_time_ms(-1.0, 30.0) == 0);
+  assert(mms::still_time_ms(31.0, 30.0) == 30000);
+  assert(std::abs(mms::still_seek_seconds(12500, 30.0) - 12.5) < 0.000001);
+  assert(mms::still_seek_seconds(-1, 30.0) == 0.0);
+  assert(mms::still_seek_seconds(31000, 30.0) == 30.0);
+
   // Normal modes remain a complete deterministic filename/date ordering.
   std::vector<mms::Item> normal = {
       item("z.jpg", mms::MediaKind::image, 20),
@@ -126,6 +146,15 @@ int main() {
   };
   verify_shuffle_cycle(separable, false, 0); // no avoidable pairs in a cycle
   verify_shuffle_cycle(separable, true, 0);  // nor across a video boundary
+  auto realized_queue = separable;
+  std::mt19937 status_rng(7);
+  mms::order_items(realized_queue, mms::SortMode::shuffle, status_rng);
+  const auto shuffle_status = mms::playlist_status(realized_queue, 2);
+  assert(shuffle_status.position == 3 && shuffle_status.total == realized_queue.size());
+  assert(shuffle_status.current_filename ==
+         realized_queue[2].path.filename().u8string());
+  assert(shuffle_status.next_filename ==
+         realized_queue[3].path.filename().u8string());
   for (unsigned seed = 0; seed < 100; ++seed) {
     auto first_cycle = separable;
     auto second_cycle = separable;

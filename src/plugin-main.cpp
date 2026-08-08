@@ -4,6 +4,7 @@
 #include "media-library.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <random>
@@ -34,8 +35,8 @@ struct Slideshow {
   std::size_t index{};
   mms::SortMode order{mms::SortMode::alphabetical};
   std::mt19937 rng{std::random_device{}()};
-  double still_seconds{30.0};
-  double item_elapsed{};
+  std::atomic<double> still_seconds{30.0};
+  std::atomic<double> item_elapsed{};
   double refresh_elapsed{};
   uint32_t transition_ms{500};
   uint32_t frame_width{1920};
@@ -44,9 +45,15 @@ struct Slideshow {
   mms::TransitionKind requested_transition{mms::TransitionKind::fade};
   mms::TransitionKind active_transition{mms::TransitionKind::fade};
   bool restart_on_activate{true};
-  bool paused{};
-  bool stopped{};
+  std::atomic<bool> paused{};
+  std::atomic<bool> stopped{};
   bool activated_once{};
+  bool dashboard_ready{};
+  bool updating{};
+  std::mutex dashboard_mutex;
+  std::string dashboard_status{"No supported media loaded"};
+  obs_source_t *timeline_media{};
+  bool timeline_is_video{};
   std::mutex audio_mutex;
   std::mutex transition_mutex;
 };
@@ -236,7 +243,53 @@ static obs_source_t *make_black_background(uint32_t width, uint32_t height) {
   return background;
 }
 
+static std::string dashboard_text(const Slideshow *s) {
+  const auto status = mms::playlist_status(s->items, s->index);
+  if (status.position == 0) return "No supported media loaded";
+  std::string text = std::to_string(status.position) + " / " +
+                     std::to_string(status.total) + "\nCurrent: " +
+                     status.current_filename + "\nNext: ";
+  if (!status.next_filename.empty()) {
+    text += status.next_filename;
+  } else if (s->loop && s->order != mms::SortMode::shuffle &&
+             !s->items.empty()) {
+    text += s->items.front().path.filename().u8string();
+  } else {
+    text += s->loop ? "(next cycle pending)" : "(end of playlist)";
+  }
+  return text;
+}
+
+static void refresh_dashboard(Slideshow *s) {
+  const std::string status = dashboard_text(s);
+  {
+    std::lock_guard<std::mutex> lock(s->dashboard_mutex);
+    s->dashboard_status = status;
+  }
+  if (s->source && s->dashboard_ready && !s->updating)
+    obs_source_update_properties(s->source);
+}
+
+static void set_timeline_media(Slideshow *s, obs_source_t *media,
+                               bool is_video) {
+  obs_source_t *old = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(s->dashboard_mutex);
+    old = s->timeline_media;
+    s->timeline_media = media ? obs_source_get_ref(media) : nullptr;
+    s->timeline_is_video = is_video;
+  }
+  if (old) obs_source_release(old);
+}
+
+static obs_source_t *get_timeline_media(Slideshow *s, bool &is_video) {
+  std::lock_guard<std::mutex> lock(s->dashboard_mutex);
+  is_video = s->timeline_is_video;
+  return obs_source_get_ref(s->timeline_media);
+}
+
 static void detach_media(Slideshow *s) {
+  set_timeline_media(s, nullptr, false);
   if (s->media)
     obs_source_remove_audio_capture_callback(s->media, audio_capture, s);
   if (s->frame_scene) obs_scene_release(s->frame_scene);
@@ -252,6 +305,7 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
     detach_media(s);
     if (s->transition) obs_transition_clear(s->transition);
     s->stopped = true;
+    refresh_dashboard(s);
     return false;
   }
   if (wanted >= s->items.size()) return false;
@@ -280,6 +334,8 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
       s->frame_background = background_item;
       s->frame_item = next_item;
       s->index = candidate;
+      set_timeline_media(s, next,
+                         s->items[candidate].kind == mms::MediaKind::video);
       configure_frame(s);
 
       obs_source_t *framed = obs_scene_get_source(next_frame);
@@ -303,6 +359,7 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
         obs_source_media_restart(next);
       blog(LOG_INFO, "[Mixed Media Slideshow] Loaded: %s",
            s->items[candidate].path.u8string().c_str());
+      refresh_dashboard(s);
       return true;
     }
     if (next_frame) obs_scene_release(next_frame);
@@ -335,9 +392,10 @@ static void advance(Slideshow *s, bool forward) {
   if (s->items.empty()) return;
   if (forward && s->index + 1 >= s->items.size()) {
     if (!s->loop) {
-      s->stopped = true;
+      const bool already_stopped = s->stopped.exchange(true);
       if (s->media && s->items[s->index].kind == mms::MediaKind::video)
         obs_source_media_stop(s->media);
+      if (s->source && !already_stopped) obs_source_media_ended(s->source);
       return;
     }
     begin_cycle(s, true);
@@ -388,6 +446,7 @@ static void refresh(Slideshow *s, bool force) {
       s->raw_items = std::move(raw);
       s->items = std::move(rebuilt);
       s->index = rebuilt_index;
+      refresh_dashboard(s);
       return;
     }
 
@@ -407,8 +466,9 @@ static void refresh(Slideshow *s, bool force) {
       if (s->loop) {
         begin_cycle(s, true);
       } else {
-        s->stopped = true;
+        const bool already_stopped = s->stopped.exchange(true);
         if (s->media && current_was_video) obs_source_media_stop(s->media);
+        if (s->source && !already_stopped) obs_source_media_ended(s->source);
       }
     } else {
       mms::order_items(remaining, mms::SortMode::shuffle, s->rng,
@@ -416,6 +476,7 @@ static void refresh(Slideshow *s, bool force) {
       s->items = std::move(remaining);
       load_index(s, 0, true);
     }
+    refresh_dashboard(s);
     return;
   }
 
@@ -434,12 +495,14 @@ static void refresh(Slideshow *s, bool force) {
   } else {
     load_index(s, std::min(s->index, s->items.size() - 1), true);
   }
+  refresh_dashboard(s);
 }
 
 static const char *source_name(void *) { return obs_module_text("Source.Name"); }
 
 static void update(void *data, obs_data_t *settings) {
   auto *s = static_cast<Slideshow *>(data);
+  s->updating = true;
   s->folder = std::filesystem::u8path(obs_data_get_string(settings, "folder"));
   s->still_seconds = std::max(0.1, obs_data_get_double(settings, "still_duration"));
   s->order = static_cast<mms::SortMode>(obs_data_get_int(settings, "order"));
@@ -454,11 +517,16 @@ static void update(void *data, obs_data_t *settings) {
   const auto frame = current_frame_size();
   s->frame_width = frame.width;
   s->frame_height = frame.height;
-  if (!replace_transition(s)) return;
+  if (!replace_transition(s)) {
+    s->updating = false;
+    return;
+  }
   obs_transition_set_size(s->transition, s->frame_width, s->frame_height);
   configure_frame(s);
   refresh(s, true);
   if (!s->media && !s->items.empty()) load_index(s, 0, true);
+  s->updating = false;
+  refresh_dashboard(s);
 }
 
 static void *create(obs_data_t *settings, obs_source_t *source) {
@@ -472,6 +540,7 @@ static void *create(obs_data_t *settings, obs_source_t *source) {
     delete s;
     return nullptr;
   }
+  s->dashboard_ready = true;
   return s;
 }
 
@@ -528,18 +597,19 @@ static void tick(void *data, float seconds) {
     refresh(s, false);
   }
   if (!s->media || s->paused || s->stopped || s->items.empty()) return;
-  s->item_elapsed += seconds;
+  const double elapsed = s->item_elapsed.load() + seconds;
+  s->item_elapsed = elapsed;
   const auto &item = s->items[s->index];
   if (item.kind == mms::MediaKind::image) {
-    if (s->item_elapsed > 1.5 &&
+    if (elapsed > 1.5 &&
         (obs_source_get_width(s->media) == 0 || obs_source_get_height(s->media) == 0)) {
       blog(LOG_WARNING, "[Mixed Media Slideshow] Skipping unreadable image: %s",
            item.path.u8string().c_str());
       advance(s, true);
-    } else if (s->item_elapsed >= s->still_seconds) {
+    } else if (elapsed >= s->still_seconds.load()) {
       advance(s, true);
     }
-  } else if (s->item_elapsed > 0.75) {
+  } else if (elapsed > 0.75) {
     const auto state = obs_source_media_get_state(s->media);
     if (state == OBS_MEDIA_STATE_ENDED || state == OBS_MEDIA_STATE_ERROR ||
         state == OBS_MEDIA_STATE_STOPPED) {
@@ -578,11 +648,58 @@ static void stop(void *data) {
 }
 static void next(void *data) { advance(static_cast<Slideshow *>(data), true); }
 static void previous(void *data) { advance(static_cast<Slideshow *>(data), false); }
+static int64_t media_duration(void *data) {
+  auto *s = static_cast<Slideshow *>(data);
+  bool video = false;
+  obs_source_t *media = get_timeline_media(s, video);
+  if (!media) return 0;
+  const int64_t result = video
+      ? std::max<int64_t>(0, obs_source_media_get_duration(media))
+      : mms::still_duration_ms(s->still_seconds.load());
+  obs_source_release(media);
+  return result;
+}
+static int64_t media_time(void *data) {
+  auto *s = static_cast<Slideshow *>(data);
+  bool video = false;
+  obs_source_t *media = get_timeline_media(s, video);
+  if (!media) return 0;
+  const int64_t result = video
+      ? std::max<int64_t>(0, obs_source_media_get_time(media))
+      : mms::still_time_ms(s->item_elapsed.load(), s->still_seconds.load());
+  obs_source_release(media);
+  return result;
+}
+static void media_set_time(void *data, int64_t milliseconds) {
+  auto *s = static_cast<Slideshow *>(data);
+  bool video = false;
+  obs_source_t *media = get_timeline_media(s, video);
+  if (!media) return;
+  if (!video) {
+    s->item_elapsed =
+        mms::still_seek_seconds(milliseconds, s->still_seconds.load());
+    obs_source_release(media);
+    return;
+  }
+  // OBS's public wrapper queues the seek only when the child advertises a
+  // media_set_time callback.  The private ffmpeg_source in OBS 32.2.1 does;
+  // wait for its real duration before exposing a meaningful seek range.
+  const int64_t duration = obs_source_media_get_duration(media);
+  if (duration > 0)
+    obs_source_media_set_time(media,
+                              std::min(std::max<int64_t>(0, milliseconds),
+                                       duration));
+  obs_source_release(media);
+}
 static enum obs_media_state state(void *data) {
   auto *s = static_cast<Slideshow *>(data);
-  if (s->stopped) return OBS_MEDIA_STATE_STOPPED;
-  if (s->paused) return OBS_MEDIA_STATE_PAUSED;
-  return s->media ? OBS_MEDIA_STATE_PLAYING : OBS_MEDIA_STATE_NONE;
+  if (s->stopped.load()) return OBS_MEDIA_STATE_STOPPED;
+  if (s->paused.load()) return OBS_MEDIA_STATE_PAUSED;
+  bool video = false;
+  obs_source_t *media = get_timeline_media(s, video);
+  if (!media) return OBS_MEDIA_STATE_NONE;
+  obs_source_release(media);
+  return OBS_MEDIA_STATE_PLAYING;
 }
 static void activate(void *data) {
   auto *s = static_cast<Slideshow *>(data);
@@ -594,19 +711,40 @@ static void activate(void *data) {
 }
 
 static bool button(obs_properties_t *, obs_property_t *property, void *data) {
+  auto *s = static_cast<Slideshow *>(data);
+  if (!s || !s->source) return false;
   const char *name = obs_property_name(property);
-  if (strcmp(name, "next") == 0) next(data);
-  else if (strcmp(name, "previous") == 0) previous(data);
-  else if (strcmp(name, "restart") == 0) restart(data);
-  else if (strcmp(name, "play_pause") == 0) {
-    auto *s = static_cast<Slideshow *>(data);
-    play_pause(s, !s->paused && !s->stopped);
-  } else if (strcmp(name, "stop") == 0) stop(data);
+  // Properties callbacks run on the UI thread.  Use the public parent-source
+  // wrappers so libobs queues each action for the source video tick rather
+  // than mutating playlist/private-source state from Qt.
+  if (strcmp(name, "next") == 0)
+    obs_source_media_next(s->source);
+  else if (strcmp(name, "previous") == 0)
+    obs_source_media_previous(s->source);
+  else if (strcmp(name, "restart") == 0)
+    obs_source_media_restart(s->source);
+  else if (strcmp(name, "play_pause") == 0)
+    obs_source_media_play_pause(s->source,
+                                !s->paused.load() && !s->stopped.load());
+  else if (strcmp(name, "stop") == 0)
+    obs_source_media_stop(s->source);
   return true;
 }
 
 static obs_properties_t *properties(void *data) {
   obs_properties_t *p = obs_properties_create();
+  obs_properties_t *status_group = obs_properties_create();
+  std::string status = "Playback status is available on an active source";
+  if (data) {
+    auto *s = static_cast<Slideshow *>(data);
+    std::lock_guard<std::mutex> lock(s->dashboard_mutex);
+    status = s->dashboard_status;
+  }
+  obs_property_t *status_text = obs_properties_add_text(
+      status_group, "playback_status_value", status.c_str(), OBS_TEXT_INFO);
+  obs_property_text_set_info_word_wrap(status_text, true);
+  obs_properties_add_group(p, "playback_status", obs_module_text("PlaybackStatus"),
+                           OBS_GROUP_NORMAL, status_group);
   obs_properties_add_path(p, "folder", obs_module_text("Folder"),
                           OBS_PATH_DIRECTORY, nullptr, nullptr);
   obs_properties_add_float(p, "still_duration", obs_module_text("StillDuration"),
@@ -670,6 +808,9 @@ static obs_source_info make_info() {
   info.media_stop = stop;
   info.media_next = next;
   info.media_previous = previous;
+  info.media_get_duration = media_duration;
+  info.media_get_time = media_time;
+  info.media_set_time = media_set_time;
   info.media_get_state = state;
   info.icon_type = OBS_ICON_TYPE_SLIDESHOW;
   return info;

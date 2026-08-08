@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <system_error>
 #include <unordered_set>
 
@@ -108,6 +110,39 @@ std::size_t preserved_index(const std::vector<Item> &items,
   for (std::size_t i = 0; i < items.size(); ++i)
     if (normalized_key(items[i].path) == key) return i;
   return items.size();
+}
+
+PlaylistStatus playlist_status(const std::vector<Item> &items,
+                               std::size_t index) {
+  if (items.empty() || index >= items.size()) return {0, items.size(), {}, {}};
+  return {index + 1, items.size(), items[index].path.filename().u8string(),
+          index + 1 < items.size()
+              ? items[index + 1].path.filename().u8string()
+              : std::string{}};
+}
+
+static int64_t seconds_to_ms(double seconds) {
+  if (!std::isfinite(seconds) || seconds <= 0.0) return 0;
+  constexpr double max_ms =
+      static_cast<double>(std::numeric_limits<int64_t>::max());
+  const double milliseconds = seconds * 1000.0;
+  if (!std::isfinite(milliseconds) || milliseconds >= max_ms)
+    return std::numeric_limits<int64_t>::max();
+  return static_cast<int64_t>(milliseconds);
+}
+
+int64_t still_duration_ms(double duration_seconds) {
+  return seconds_to_ms(duration_seconds);
+}
+
+int64_t still_time_ms(double elapsed_seconds, double duration_seconds) {
+  return seconds_to_ms(std::min(std::max(0.0, elapsed_seconds),
+                                std::max(0.0, duration_seconds)));
+}
+
+double still_seek_seconds(int64_t milliseconds, double duration_seconds) {
+  const double seconds = milliseconds <= 0 ? 0.0 : milliseconds / 1000.0;
+  return std::min(seconds, std::max(0.0, duration_seconds));
 }
 
 FrameSize stable_frame_size(uint32_t base_width, uint32_t base_height) {

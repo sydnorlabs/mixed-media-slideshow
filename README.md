@@ -45,8 +45,19 @@ in Shuffle, rebuilds only the unplayed remainder. Unsupported, missing,
 corrupt, or decoder-rejected items are skipped without blocking later items.
 
 Use the standard OBS media toolbar for previous, next, restart, play/pause, and
-stop. The same controls are buttons in Source Properties. Still-image timing
-pauses with playback; videos use OBS's FFmpeg media source and retain audio.
+stop. Its timeline shows real elapsed/duration values for both stills and
+videos and can seek the current still or a seekable video. The same controls
+are buttons in Source Properties. The read-only **Playback Status** group in
+Properties shows the current cycle position, current filename, and next queued
+filename. At a Shuffle cycle end it reports that the next cycle is pending
+because the new permutation is not realized until the boundary is crossed.
+
+OBS 32.2.1's public source API provides timeline callbacks but no supported way
+for a plugin to add arbitrary playlist text such as `5 / 11` to the stock media
+control strip. The status therefore stays in plugin-owned Properties; the
+plugin does not use private Qt UI injection and draws no dashboard into program
+video or audio. Still-image timing pauses with playback; videos use OBS's
+FFmpeg media source and retain audio.
 Private video audio is forwarded only through the parent slideshow source; its
 video-only internal
 transition is not exposed as a second scene audio route. Private media sources

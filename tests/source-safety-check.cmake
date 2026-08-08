@@ -41,3 +41,19 @@ require_literal("const bool background_ready = background_item != nullptr" "matt
 
 # Activation policy must use libobs's source activation callback.
 require_literal("info.activate = activate" "libobs activation callback registration")
+
+# Playback dashboard uses only public media callbacks and source Properties.
+require_literal("info.media_get_duration = media_duration" "parent duration callback")
+require_literal("info.media_get_time = media_time" "parent timeline callback")
+require_literal("info.media_set_time = media_set_time" "parent seek callback")
+require_literal("obs_source_media_get_duration(media)" "private-media duration forwarding")
+require_literal("obs_source_media_get_time(media)" "private-media time forwarding")
+require_literal("obs_source_media_set_time(media" "safe private-media seek forwarding")
+require_literal("get_timeline_media(s, video)" "strong private-media timeline reference")
+require_literal("OBS_TEXT_INFO" "read-only Properties status")
+require_literal("obs_source_update_properties(s->source)" "live Properties status refresh")
+forbid_literal("QWidget" "private Qt dashboard injection")
+forbid_literal("obs_frontend" "frontend UI dashboard injection")
+require_literal("obs_source_media_ended(s->source)" "parent terminal media signal")
+require_literal("obs_source_media_next(s->source)" "queued Properties media controls")
+forbid_literal("strcmp(name, \"next\") == 0) next(data)" "direct UI-thread playlist mutation")
