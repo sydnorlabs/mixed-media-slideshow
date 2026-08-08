@@ -43,9 +43,35 @@ jobs:
           }
           if ($unexpected) { throw "Unexpected packaged files: $($unexpected.FullName -join ', ')" }
 
-          $headers = & dumpbin.exe /headers $dll | Out-String
-          if ($LASTEXITCODE -ne 0 -or $headers -notmatch '8664 machine \(x64\)') {
-            throw 'DLL is not a verified Windows x64 PE image'
+          # Parse the PE headers directly so validation does not depend on a Visual
+          # Studio developer shell or dumpbin.exe being available on PATH.
+          $bytes = [IO.File]::ReadAllBytes($dll)
+          if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+            throw 'DLL is not a valid PE image (missing DOS header)'
+          }
+
+          $peOffsetValue = [BitConverter]::ToUInt32($bytes, 0x3c)
+          if ($peOffsetValue -gt ($bytes.Length - 26)) {
+            throw 'DLL is not a valid PE image (invalid PE header offset)'
+          }
+          $peOffset = [int]$peOffsetValue
+          if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) {
+            throw 'DLL is not a valid PE image (missing PE signature)'
+          }
+
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $optionalHeaderSize = [BitConverter]::ToUInt16($bytes, $peOffset + 20)
+          $characteristics = [BitConverter]::ToUInt16($bytes, $peOffset + 22)
+          if ($optionalHeaderSize -lt 2 -or
+              $peOffset + 24 + $optionalHeaderSize -gt $bytes.Length) {
+            throw 'DLL is not a valid PE image (invalid optional header)'
+          }
+          $optionalHeaderMagic = [BitConverter]::ToUInt16($bytes, $peOffset + 24)
+          if ($machine -ne 0x8664 -or $optionalHeaderMagic -ne 0x020b) {
+            throw 'DLL is not a verified Windows x64 PE32+ image'
+          }
+          if (($characteristics -band 0x2000) -eq 0) {
+            throw 'PE image is not marked as a DLL'
           }
 
           New-Item -ItemType Directory -Force dist | Out-Null
