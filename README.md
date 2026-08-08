@@ -1,8 +1,26 @@
-# Mixed Media Slideshow
+# Mixed Media Slideshow for OBS Studio
 
-An OBS Studio **32.2.1** Windows x64 source plugin that presents the supported
-images and videos in one folder. Images use a configurable duration (30 seconds
-by default); videos play to completion and forward their audio to OBS.
+![Mixed Media Slideshow for OBS Studio — photo and video folder slideshow plugin](assets/mixed-media-slideshow-social-preview.png)
+
+**Play photos, church reels, Shorts, and announcement graphics from one OBS folder slideshow—with video audio included.**
+
+[Download the latest Windows release](https://github.com/sydnorlabs/mixed-media-slideshow/releases/latest)
+
+## The problem it solves
+
+OBS Studio’s built-in Slideshow source plays photos, but it cannot play video files from the same folder. I needed a livestream slideshow that could show church reels and Shorts alongside church announcement graphics. ProPresenter can play a mixed-media presentation, but during worship it is needed for lyrics and cannot also keep the livestream slideshow running.
+
+Mixed Media Slideshow lets OBS take over with one dependable folder-based source. It combines images and videos, keeps videos’ audio, and continues the livestream slideshow during prayer, transitions, pre-service, and other moments when ProPresenter is handling worship lyrics.
+
+## Key features
+
+- One folder for photos, videos, reels, Shorts, and announcement graphics.
+- Configurable photo duration; videos play to completion with audio.
+- Alphabetical, date, or Shuffle playback with loop support.
+- Cut, Fade, directional Swipe/Slide, and Fade to Black transitions.
+- Proportional Fit + Center sizing with an opaque black matte—no stretching, unwanted crop, or background bleed-through.
+- Standard OBS media controls plus source-level Playback Status for the current item and next queued file.
+- Safe folder refresh and resilient skipping of unsupported, missing, corrupt, or decoder-rejected files.
 
 ## Install on Windows
 
