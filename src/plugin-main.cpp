@@ -82,11 +82,9 @@ static void configure_frame(Slideshow *s) {
     obs_sceneitem_set_bounds_crop(s->frame_background, false);
     obs_sceneitem_set_bounds(s->frame_background, &bounds);
   }
-  const bool video = s->items[s->index].kind == mms::MediaKind::video;
-  obs_sceneitem_set_bounds_type(
-      s->frame_item, video ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_SCALE_OUTER);
+  obs_sceneitem_set_bounds_type(s->frame_item, OBS_BOUNDS_SCALE_INNER);
   obs_sceneitem_set_bounds_alignment(s->frame_item, OBS_ALIGN_CENTER);
-  obs_sceneitem_set_bounds_crop(s->frame_item, !video);
+  obs_sceneitem_set_bounds_crop(s->frame_item, false);
   obs_sceneitem_set_bounds(s->frame_item, &bounds);
 }
 
@@ -233,7 +231,7 @@ static obs_source_t *make_black_background(uint32_t width, uint32_t height) {
   obs_data_set_int(settings, "height", height);
   obs_data_set_int(settings, "color", 0xFF000000);
   obs_source_t *background = obs_source_create_private(
-      "color_source", "Mixed Media Slideshow video background", settings);
+      "color_source", "Mixed Media Slideshow black matte", settings);
   obs_data_release(settings);
   return background;
 }
@@ -265,13 +263,12 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
         "Mixed Media Slideshow media frame") : nullptr;
     obs_source_t *background = nullptr;
     obs_sceneitem_t *background_item = nullptr;
-    if (next_frame && s->items[candidate].kind == mms::MediaKind::video) {
+    if (next_frame) {
       background = make_black_background(s->frame_width, s->frame_height);
       if (background) background_item = obs_scene_add(next_frame, background);
     }
     obs_sceneitem_t *next_item = next_frame ? obs_scene_add(next_frame, next) : nullptr;
-    const bool background_ready = s->items[candidate].kind != mms::MediaKind::video ||
-                                  background_item != nullptr;
+    const bool background_ready = background_item != nullptr;
     if (background) obs_source_release(background);
     if (next && next_frame && next_item && background_ready) {
       obs_source_add_audio_capture_callback(next, audio_capture, s);

@@ -31,11 +31,13 @@ require_literal("obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B)"
 require_literal("obs_transition_set(transition, destination)" "transition input collapse")
 require_literal("obs_source_t *transition = get_transition_ref(s)" "graphics callback ownership")
 
-# Photos cover while videos contain over an opaque private black frame.
-require_literal("video ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_SCALE_OUTER" "per-media frame sizing")
-require_literal("obs_sceneitem_set_bounds_crop(s->frame_item, !video)" "video contain without crop")
-require_literal([["color_source", "Mixed Media Slideshow video background"]] "private video black background")
-require_literal([[obs_data_set_int(settings, "color", 0xFF000000)]] "opaque black video background")
+# Every media kind uses non-cropping Fit + Center over an opaque black matte.
+require_literal("obs_sceneitem_set_bounds_type(s->frame_item, OBS_BOUNDS_SCALE_INNER)" "media fit sizing")
+require_literal("obs_sceneitem_set_bounds_crop(s->frame_item, false)" "non-cropping media frame")
+forbid_literal("OBS_BOUNDS_SCALE_OUTER" "cover/crop framing")
+require_literal([["color_source", "Mixed Media Slideshow black matte"]] "private media black matte")
+require_literal([[obs_data_set_int(settings, "color", 0xFF000000)]] "opaque black media matte")
+require_literal("const bool background_ready = background_item != nullptr" "matte required for every media kind")
 
 # Activation policy must use libobs's source activation callback.
 require_literal("info.activate = activate" "libobs activation callback registration")

@@ -28,12 +28,11 @@ by default); videos play to completion and forward their audio to OBS.
 Add **Mixed Media Slideshow** from the Sources `+` menu and select a folder.
 Only files directly in that folder are used; subfolders are not traversed.
 Choose alphabetical, date (oldest first), or shuffle order, loop behavior, and
-a Cut, Fade, directional Swipe/Slide, or Fade to Black transition. Photos use
-proportional Cover + Center sizing: they fill the source frame fixed to OBS's
-current base canvas size and only their outside edges are cropped. Videos use
-proportional Contain + Center sizing instead, so the complete picture remains
-visible without stretching or cropping; opaque black letterbox/pillarbox bars
-fill any unused part of that same fixed frame.
+a Cut, Fade, directional Swipe/Slide, or Fade to Black transition. Photos and
+videos both use proportional Fit + Center sizing inside a source frame fixed to
+OBS's current base canvas size. Every pixel remains visible without stretching
+or cropping; an opaque black matte fills any unused letterbox/pillarbox area so
+underlying scene content cannot show through.
 
 Each shuffle cycle contains every supported item exactly once. Videos are kept
 apart within and between cycles whenever images are available as separators.

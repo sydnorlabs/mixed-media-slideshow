@@ -4,7 +4,7 @@ Record the OBS log and exact test media used. Do not mark an item passed unless
 it was observed interactively on Windows x64 in OBS Studio 32.2.1.
 
 - [ ] CI job passed, DLL has PE32+ x86-64 headers, and archive layout validation passed.
-- [ ] Clean OBS 32.2.1 x64 starts with no plugin loader error; log shows version `1.0.2 loaded`.
+- [ ] Clean OBS 32.2.1 x64 starts with no plugin loader error; log shows version `1.0.3 loaded`.
 - [ ] **Mixed Media Slideshow** appears in the source picker and can be added.
 - [ ] Default still duration is 30 seconds and two readable images advance accordingly.
 - [ ] MP4, MKV, and WebM test videos play to their natural end; picture is visible and audio reaches the OBS mixer/recording without duplication.
@@ -15,8 +15,8 @@ it was observed interactively on Windows x64 in OBS Studio 32.2.1.
 - [ ] In Shuffle, observe at least two complete cycles: every supported file appears exactly once in each cycle, the second cycle is newly shuffled, and an unchanged periodic folder scan neither changes the realized order nor replays an item.
 - [ ] With enough images to separate the videos, Shuffle never places videos together, including the boundary between two cycles. Then test more videos than images + 1 and confirm only the mathematically unavoidable minimum adjacent-video pairs occurs.
 - [ ] The source transform box remains the OBS base-canvas aspect/size while switching among portrait, landscape, and differently sized image/video files; there is no late resize or snap.
-- [ ] **Photo Cover:** every photo, including its first visible frame, proportionally fills and stays centered in that fixed box without stretching; only outside edges are center-cropped and there are no bars.
-- [ ] **Video Contain:** 16:9 fills naturally. Portrait 1080x1920 and other non-16:9 videos are fully visible, centered, unzoomed, uncropped, and undistorted with solid black letter/pillarbox bars; no underlying scene content leaks through the bars.
+- [ ] **Photo Fit + Center:** the 2304x1728 announcement artwork, the 940x788 artwork, and other non-16:9 stills are fully visible from their first frame, centered, uncropped, and undistorted. Logos, text, and footers remain complete, with a solid black matte in unused space and no underlying scene leakage.
+- [ ] **Video Fit + Center:** 16:9 fills naturally. Portrait 1080x1920 and other non-16:9 videos are fully visible, centered, unzoomed, uncropped, and undistorted with a solid black matte; no underlying scene content leaks through the bars.
 - [ ] Cut changes immediately; Fade visibly blends for the configured duration.
 - [ ] Swipe Left/Right and Slide Left/Right move in the labeled direction; Fade to Black reaches black between items. Confirm the OBS log reports no transition fallback during these checks.
 - [ ] OBS media-toolbar and Properties buttons work for next, previous, current-item restart, play/pause, and stop on both stills and videos, including at cycle boundaries and after a folder refresh.
