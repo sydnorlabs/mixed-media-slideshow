@@ -145,6 +145,30 @@ double still_seek_seconds(int64_t milliseconds, double duration_seconds) {
   return std::min(seconds, std::max(0.0, duration_seconds));
 }
 
+std::string quiz_page_url(const std::string &base, uint64_t counter,
+                          double dwell_seconds) {
+  if (base.empty()) return {};
+  std::string dwell = "0";
+  if (std::isfinite(dwell_seconds) && dwell_seconds > 0.0) {
+    const double tenths = std::round(dwell_seconds * 10.0);
+    if (std::isfinite(tenths) && tenths > 0.0) {
+      const long long t = static_cast<long long>(tenths);
+      if (t % 10 == 0)
+        dwell = std::to_string(t / 10);
+      else
+        dwell = std::to_string(t / 10) + "." + std::to_string(t % 10);
+    }
+  }
+  std::string sep;
+  if (base.back() == '?' || base.back() == '&')
+    sep = "";
+  else if (base.find('?') == std::string::npos)
+    sep = "?";
+  else
+    sep = "&";
+  return base + sep + "q=" + std::to_string(counter) + "&dwell=" + dwell;
+}
+
 FrameSize stable_frame_size(uint32_t base_width, uint32_t base_height) {
   // OBS has no base dimensions before video is initialized. Keep a useful,
   // deterministic 16:9 source transform box until video info is available.

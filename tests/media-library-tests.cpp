@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include "media-library.hpp"
 
 #include <algorithm>
@@ -33,9 +34,27 @@ static std::size_t adjacent_video_pairs(const std::vector<mms::Item> &items,
   return result;
 }
 
+static void verify_quiz_url() {
+  assert(mms::quiz_page_url("https://host/quiz/", 0, 20.0) ==
+         "https://host/quiz/?q=0&dwell=20");
+  assert(mms::quiz_page_url("https://host/quiz/?v=4", 7, 12.5) ==
+         "https://host/quiz/?v=4&q=7&dwell=12.5");
+  assert(mms::quiz_page_url("https://host/quiz/?", 3, 30.0) ==
+         "https://host/quiz/?q=3&dwell=30");
+  assert(mms::quiz_page_url("https://host/quiz/?v=4&", 1, 5.0) ==
+         "https://host/quiz/?v=4&q=1&dwell=5");
+  assert(mms::quiz_page_url("", 9, 20.0).empty());
+  assert(mms::quiz_page_url("https://host/quiz/", 0, 0.5) ==
+         "https://host/quiz/?q=0&dwell=0.5");
+  assert(mms::quiz_page_url("https://host/quiz/", 0, 0.0) ==
+         "https://host/quiz/?q=0&dwell=0");
+  assert(mms::quiz_page_url("https://host/quiz/", 0, -3.0) ==
+         "https://host/quiz/?q=0&dwell=0");
+}
+
 static void verify_shuffle_cycle(std::vector<mms::Item> input,
-                                 bool previous_was_video,
-                                 std::size_t expected_pairs) {
+                                  bool previous_was_video,
+                                  std::size_t expected_pairs) {
   const auto expected = keys(input);
   for (unsigned seed = 0; seed < 100; ++seed) {
     auto cycle = input;
@@ -180,6 +199,8 @@ int main() {
   };
   verify_shuffle_cycle(excess_videos, false, 2);
   verify_shuffle_cycle(excess_videos, true, 3);
+
+  verify_quiz_url();
 
   fs::remove_all(root);
   std::cout << "media-library-tests: all checks passed\n";

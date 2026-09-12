@@ -59,6 +59,8 @@ PlaylistStatus playlist_status(const std::vector<Item> &items,
 int64_t still_duration_ms(double duration_seconds);
 int64_t still_time_ms(double elapsed_seconds, double duration_seconds);
 double still_seek_seconds(int64_t milliseconds, double duration_seconds);
+std::string quiz_page_url(const std::string &base, uint64_t counter,
+                          double dwell_seconds);
 FrameSize stable_frame_size(uint32_t base_width, uint32_t base_height);
 CoverTransform cover_transform(uint32_t source_width, uint32_t source_height,
                                uint32_t frame_width, uint32_t frame_height);
