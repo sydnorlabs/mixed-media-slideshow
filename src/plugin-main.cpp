@@ -765,7 +765,16 @@ static void tick(void *data, float seconds) {
   if (!s->media || s->paused || s->stopped || s->items.empty()) return;
   const double elapsed = s->item_elapsed.load() + seconds;
   s->item_elapsed = elapsed;
-  if (s->show_card_now) return;
+  if (s->show_card_now) {
+    /* The preview is a one-shot: it runs for the same duration a real card insertion would,
+       then the playlist resumes on its own, so the operator sees the whole cycle — question,
+       reveal, advance — rather than a card frozen on screen. */
+    if (s->showing_quiz && elapsed >= s->quiz_seconds.load()) {
+      s->show_card_now = false;
+      advance(s, true);
+    }
+    return;
+  }
   if (s->showing_quiz) {
     if (elapsed >= s->quiz_seconds.load()) advance(s, true);
     return;
