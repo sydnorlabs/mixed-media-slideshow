@@ -924,8 +924,9 @@ static void defaults(obs_data_t *settings) {
   obs_data_set_default_int(settings, "fade_ms", 500);
   obs_data_set_default_bool(settings, "restart_on_activate", true);
   obs_data_set_default_bool(settings, "quiz_enabled", true);
-  obs_data_set_default_string(settings, "quiz_url",
-                              "https://example.invalid/quiz/");
+  // Deliberately NOT defaulted. This plugin is published publicly, so no deployment
+  // URL is baked in; every install sets its own. Do not hardcode one here.
+  obs_data_set_default_string(settings, "quiz_url", "");
   obs_data_set_default_double(settings, "quiz_seconds", 20.0);
   obs_data_set_default_int(settings, "quiz_every", 6);
 }
