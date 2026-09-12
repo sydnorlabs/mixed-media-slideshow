@@ -63,6 +63,7 @@ struct Slideshow {
   std::size_t media_since_quiz{};
   uint64_t quiz_counter{};
   bool showing_quiz{};
+  bool show_card_now{};
 };
 
 static bool same_raw(const std::vector<mms::Item> &a,
@@ -239,10 +240,26 @@ static obs_source_t *make_media(const mms::Item &item) {
   return child;
 }
 
-static obs_source_t *make_web(const Slideshow *s) {
+static bool is_browser_source(const obs_source_t *src) {
+  return src && strcmp(obs_source_get_id(src), "browser_source") == 0;
+}
+
+static void unmark_card_visible(obs_source_t *src) {
+  if (is_browser_source(src)) { obs_source_dec_showing(src); obs_source_dec_active(src); }
+}
+
+static obs_source_t *make_web(const Slideshow *s, bool preview) {
   obs_data_t *settings = obs_data_create();
-  const std::string url = mms::quiz_page_url(s->quiz_url, s->quiz_counter,
-                                            s->quiz_seconds.load());
+  std::string url = mms::quiz_page_url(s->quiz_url, s->quiz_counter,
+                                       s->quiz_seconds.load());
+  if (preview && !url.empty()) {
+    if (url.back() == '?' || url.back() == '&')
+      url += "ui=1";
+    else if (url.find('?') == std::string::npos)
+      url += "?ui=1";
+    else
+      url += "&ui=1";
+  }
   obs_data_set_string(settings, "url", url.c_str());
   obs_data_set_bool(settings, "is_local_file", false);
   obs_data_set_int(settings, "width", static_cast<long long>(s->frame_width));
@@ -254,6 +271,12 @@ static obs_source_t *make_web(const Slideshow *s) {
   obs_data_set_string(settings, "css", "");
   obs_source_t *child = obs_source_create_private(
       "browser_source", "Mixed Media Slideshow trivia card", settings);
+  if (child) {
+    /* OBS's browser source only paints when it is told it is showing, and a privately created
+       source is never activated by the core. Without this the card produces no frames at all. */
+    obs_source_inc_showing(child);
+    obs_source_inc_active(child);
+  }
   obs_data_release(settings);
   return child;
 }
@@ -325,7 +348,10 @@ static void detach_media(Slideshow *s) {
   s->frame_scene = nullptr;
   s->frame_background = nullptr;
   s->frame_item = nullptr;
-  if (s->media) obs_source_release(s->media);
+  if (s->media) {
+    unmark_card_visible(s->media);
+    obs_source_release(s->media);
+  }
   s->media = nullptr;
 }
 
@@ -368,7 +394,10 @@ static bool attach_view(Slideshow *s, obs_source_t *next, bool is_video,
     if (old_media)
       obs_source_remove_audio_capture_callback(old_media, audio_capture, s);
     if (old_frame) obs_scene_release(old_frame);
-    if (old_media) obs_source_release(old_media);
+    if (old_media) {
+      unmark_card_visible(old_media);
+      obs_source_release(old_media);
+    }
 
     s->item_elapsed = 0.0;
     s->stopped = false;
@@ -378,7 +407,10 @@ static bool attach_view(Slideshow *s, obs_source_t *next, bool is_video,
     return true;
   }
   if (next_frame) obs_scene_release(next_frame);
-  if (next) obs_source_release(next);
+  if (next) {
+    unmark_card_visible(next);
+    obs_source_release(next);
+  }
   return false;
 }
 
@@ -421,7 +453,7 @@ static bool load_index(Slideshow *s, std::size_t wanted, bool forward) {
 
 static bool load_quiz(Slideshow *s) {
   if (!s->quiz_enabled || s->quiz_url.empty() || s->quiz_every < 1) return false;
-  obs_source_t *next = make_web(s);
+  obs_source_t *next = make_web(s, false);
   if (!next) {
     blog(LOG_WARNING,
          "[Mixed Media Slideshow] Browser source unavailable; skipping trivia card");
@@ -440,6 +472,23 @@ static bool load_quiz(Slideshow *s) {
   return true;
 }
 
+static bool load_preview_card(Slideshow *s) {
+  if (s->quiz_url.empty()) return false;
+  obs_source_t *next = make_web(s, true);
+  if (!next) {
+    blog(LOG_WARNING,
+         "[Mixed Media Slideshow] Browser source unavailable; skipping trivia card");
+    return false;
+  }
+  if (!attach_view(s, next, false, "Bible trivia card")) {
+    blog(LOG_WARNING,
+         "[Mixed Media Slideshow] Could not build the trivia card frame; skipping");
+    return false;
+  }
+  s->showing_quiz = true;
+  return true;
+}
+
 static bool begin_cycle(Slideshow *s, bool avoid_current_video_boundary) {
   const bool previous_was_video = avoid_current_video_boundary && s->media &&
       !s->items.empty() && s->index < s->items.size() &&
@@ -452,6 +501,7 @@ static bool begin_cycle(Slideshow *s, bool avoid_current_video_boundary) {
 
 static void advance(Slideshow *s, bool forward) {
   if (s->items.empty()) return;
+  if (s->show_card_now) return;
   if (s->showing_quiz) {
     // The card is not a playlist entry: clear it and continue with the item after
     // the one that was on screen when the card appeared.
@@ -497,7 +547,7 @@ static void advance(Slideshow *s, bool forward) {
 }
 
 static void refresh(Slideshow *s, bool force) {
-  if (s->showing_quiz && !force) {
+  if (s->show_card_now || (s->showing_quiz && !force)) {
     // A trivia card is on screen.  Update playlist metadata, but never swap the
     // current view out from under the card — the 1-second folder rescan must not
     // interrupt it.
@@ -623,6 +673,8 @@ static void update(void *data, obs_data_t *settings) {
   s->quiz_url = obs_data_get_string(settings, "quiz_url");
   s->quiz_seconds = obs_data_get_double(settings, "quiz_seconds");
   s->quiz_every = static_cast<int>(obs_data_get_int(settings, "quiz_every"));
+  const bool was_holding = s->show_card_now;
+  s->show_card_now = obs_data_get_bool(settings, "show_card_now");
   const auto frame = current_frame_size();
   s->frame_width = frame.width;
   s->frame_height = frame.height;
@@ -634,6 +686,11 @@ static void update(void *data, obs_data_t *settings) {
   configure_frame(s);
   refresh(s, true);
   if (!s->media && !s->items.empty()) load_index(s, 0, true);
+  if (s->show_card_now) {
+    if (!was_holding || !s->showing_quiz) load_preview_card(s);
+  } else if (was_holding && s->showing_quiz) {
+    advance(s, true);
+  }
   s->updating = false;
   refresh_dashboard(s);
 }
@@ -708,6 +765,7 @@ static void tick(void *data, float seconds) {
   if (!s->media || s->paused || s->stopped || s->items.empty()) return;
   const double elapsed = s->item_elapsed.load() + seconds;
   s->item_elapsed = elapsed;
+  if (s->show_card_now) return;
   if (s->showing_quiz) {
     if (elapsed >= s->quiz_seconds.load()) advance(s, true);
     return;
@@ -834,7 +892,8 @@ static void activate(void *data) {
   // libobs calls source_info::activate on the real inactive-to-active edge.
   // Initial creation already starts at a cycle head; later activations begin a
   // deliberate new cycle rather than resuming at a surprising middle item.
-  if (s->restart_on_activate && s->activated_once) begin_cycle(s, true);
+  if (s->restart_on_activate && s->activated_once && !s->show_card_now)
+    begin_cycle(s, true);
   s->activated_once = true;
 }
 
@@ -859,8 +918,26 @@ static bool button(obs_properties_t *, obs_property_t *property, void *data) {
   return true;
 }
 
+static bool page_changed(obs_properties_t *props, obs_property_t *,
+                         obs_data_t *settings) {
+  const char *page = settings ? obs_data_get_string(settings, "settings_page")
+                              : "playlist";
+  const bool trivia = page && strcmp(page, "trivia") == 0;
+  obs_property_t *playlist = obs_properties_get(props, "playlist");
+  obs_property_t *trivia_group = obs_properties_get(props, "quiz_cards");
+  if (playlist) obs_property_set_visible(playlist, !trivia);
+  if (trivia_group) obs_property_set_visible(trivia_group, trivia);
+  return true;
+}
+
 static obs_properties_t *properties(void *data) {
   obs_properties_t *p = obs_properties_create();
+  obs_property_t *page = obs_properties_add_list(
+      p, "settings_page", obs_module_text("SettingsPage"), OBS_COMBO_TYPE_LIST,
+      OBS_COMBO_FORMAT_STRING);
+  obs_property_list_add_string(page, obs_module_text("PagePlaylist"), "playlist");
+  obs_property_list_add_string(page, obs_module_text("PageTrivia"), "trivia");
+  obs_property_set_modified_callback(page, page_changed);
   obs_properties_t *status_group = obs_properties_create();
   std::string status = "Playback status is available on an active source";
   if (data) {
@@ -873,19 +950,20 @@ static obs_properties_t *properties(void *data) {
   obs_property_text_set_info_word_wrap(status_text, true);
   obs_properties_add_group(p, "playback_status", obs_module_text("PlaybackStatus"),
                            OBS_GROUP_NORMAL, status_group);
-  obs_properties_add_path(p, "folder", obs_module_text("Folder"),
+  obs_properties_t *playlist = obs_properties_create();
+  obs_properties_add_path(playlist, "folder", obs_module_text("Folder"),
                           OBS_PATH_DIRECTORY, nullptr, nullptr);
-  obs_properties_add_float(p, "still_duration", obs_module_text("StillDuration"),
+  obs_properties_add_float(playlist, "still_duration", obs_module_text("StillDuration"),
                            0.1, 86400.0, 0.1);
   obs_property_t *order = obs_properties_add_list(
-      p, "order", obs_module_text("Order"), OBS_COMBO_TYPE_LIST,
+      playlist, "order", obs_module_text("Order"), OBS_COMBO_TYPE_LIST,
       OBS_COMBO_FORMAT_INT);
   obs_property_list_add_int(order, obs_module_text("Alphabetical"), 0);
   obs_property_list_add_int(order, obs_module_text("Date"), 1);
   obs_property_list_add_int(order, obs_module_text("Shuffle"), 2);
-  obs_properties_add_bool(p, "loop", obs_module_text("Loop"));
+  obs_properties_add_bool(playlist, "loop", obs_module_text("Loop"));
   obs_property_t *transition = obs_properties_add_list(
-      p, "transition", obs_module_text("Transition"), OBS_COMBO_TYPE_LIST,
+      playlist, "transition", obs_module_text("Transition"), OBS_COMBO_TYPE_LIST,
       OBS_COMBO_FORMAT_INT);
   obs_property_list_add_int(transition, obs_module_text("Cut"), 0);
   obs_property_list_add_int(transition, obs_module_text("Fade"), 1);
@@ -894,9 +972,20 @@ static obs_properties_t *properties(void *data) {
   obs_property_list_add_int(transition, obs_module_text("SlideLeft"), 4);
   obs_property_list_add_int(transition, obs_module_text("SlideRight"), 5);
   obs_property_list_add_int(transition, obs_module_text("FadeToBlack"), 6);
-  obs_properties_add_int(p, "fade_ms", obs_module_text("TransitionDuration"),
+  obs_properties_add_int(playlist, "fade_ms", obs_module_text("TransitionDuration"),
                          0, 10000, 50);
-  obs_properties_add_bool(p, "restart_on_activate", obs_module_text("RestartOnActivate"));
+  obs_properties_add_bool(playlist, "restart_on_activate",
+                          obs_module_text("RestartOnActivate"));
+  obs_properties_add_button2(playlist, "previous", obs_module_text("Previous"),
+                             button, data);
+  obs_properties_add_button2(playlist, "next", obs_module_text("Next"), button, data);
+  obs_properties_add_button2(playlist, "restart", obs_module_text("Restart"),
+                             button, data);
+  obs_properties_add_button2(playlist, "play_pause", obs_module_text("PlayPause"),
+                             button, data);
+  obs_properties_add_button2(playlist, "stop", obs_module_text("Stop"), button, data);
+  obs_property_t *playlist_group = obs_properties_add_group(
+      p, "playlist", obs_module_text("PagePlaylist"), OBS_GROUP_NORMAL, playlist);
   obs_properties_t *quiz_group = obs_properties_create();
   obs_properties_add_bool(quiz_group, "quiz_enabled",
                           obs_module_text("QuizEnabled"));
@@ -906,13 +995,20 @@ static obs_properties_t *properties(void *data) {
                            obs_module_text("QuizSeconds"), 5.0, 600.0, 0.1);
   obs_properties_add_int(quiz_group, "quiz_every", obs_module_text("QuizEvery"),
                          1, 100, 1);
-  obs_properties_add_group(p, "quiz_cards", obs_module_text("QuizGroup"),
-                           OBS_GROUP_NORMAL, quiz_group);
-  obs_properties_add_button2(p, "previous", obs_module_text("Previous"), button, data);
-  obs_properties_add_button2(p, "next", obs_module_text("Next"), button, data);
-  obs_properties_add_button2(p, "restart", obs_module_text("Restart"), button, data);
-  obs_properties_add_button2(p, "play_pause", obs_module_text("PlayPause"), button, data);
-  obs_properties_add_button2(p, "stop", obs_module_text("Stop"), button, data);
+  obs_properties_add_bool(quiz_group, "show_card_now",
+                          obs_module_text("ShowCardNow"));
+  obs_property_t *trivia_group = obs_properties_add_group(
+      p, "quiz_cards", obs_module_text("QuizGroup"), OBS_GROUP_NORMAL, quiz_group);
+  obs_data_t *cur = nullptr;
+  if (data) {
+    auto *s = static_cast<Slideshow *>(data);
+    if (s->source) cur = obs_source_get_settings(s->source);
+  }
+  const char *sel = cur ? obs_data_get_string(cur, "settings_page") : "playlist";
+  const bool trivia = sel && strcmp(sel, "trivia") == 0;
+  obs_property_set_visible(playlist_group, !trivia);
+  obs_property_set_visible(trivia_group, trivia);
+  if (cur) obs_data_release(cur);
   return p;
 }
 
@@ -929,6 +1025,8 @@ static void defaults(obs_data_t *settings) {
   obs_data_set_default_string(settings, "quiz_url", "");
   obs_data_set_default_double(settings, "quiz_seconds", 20.0);
   obs_data_set_default_int(settings, "quiz_every", 6);
+  obs_data_set_default_bool(settings, "show_card_now", false);
+  obs_data_set_default_string(settings, "settings_page", "playlist");
 }
 
 static obs_source_info make_info() {

@@ -8,3 +8,4 @@
 
 # internal build briefs — contain deployment URLs, never publish
 QUIZ_CARDS_BRIEF*.md
+cmake/.CMakeBuildNumber
